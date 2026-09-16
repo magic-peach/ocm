@@ -7,25 +7,34 @@ import (
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/events"
 )
 
+type recordedCall struct {
+	method     string
+	ctx        context.Context
+	reason     string
+	message    string
+	messageFmt string
+	args       []interface{}
+}
+
 type fakeRecorder struct {
 	component string
-	calls     []string
+	calls     []recordedCall
 }
 
 func (f *fakeRecorder) Event(ctx context.Context, reason, message string) {
-	f.calls = append(f.calls, "Event:"+reason+":"+message)
+	f.calls = append(f.calls, recordedCall{method: "Event", ctx: ctx, reason: reason, message: message})
 }
 
 func (f *fakeRecorder) Eventf(ctx context.Context, reason, messageFmt string, args ...interface{}) {
-	f.calls = append(f.calls, "Eventf:"+reason)
+	f.calls = append(f.calls, recordedCall{method: "Eventf", ctx: ctx, reason: reason, messageFmt: messageFmt, args: args})
 }
 
 func (f *fakeRecorder) Warning(ctx context.Context, reason, message string) {
-	f.calls = append(f.calls, "Warning:"+reason+":"+message)
+	f.calls = append(f.calls, recordedCall{method: "Warning", ctx: ctx, reason: reason, message: message})
 }
 
 func (f *fakeRecorder) Warningf(ctx context.Context, reason, messageFmt string, args ...interface{}) {
-	f.calls = append(f.calls, "Warningf:"+reason)
+	f.calls = append(f.calls, recordedCall{method: "Warningf", ctx: ctx, reason: reason, messageFmt: messageFmt, args: args})
 }
 
 func (f *fakeRecorder) ForComponent(componentName string) events.Recorder {
@@ -44,25 +53,34 @@ func (f *fakeRecorder) Shutdown() {}
 
 func TestEventsRecorderWrapperDelegation(t *testing.T) {
 	f := &fakeRecorder{component: "test"}
-	w := NewEventsRecorderWrapper(context.Background(), f)
+	ctx := context.Background()
+	w := NewEventsRecorderWrapper(ctx, f)
 
 	w.Event("Created", "created a thing")
 	w.Eventf("Updated", "updated %d things", 3)
 	w.Warning("Failed", "failed a thing")
 	w.Warningf("Retrying", "retrying %d times", 2)
 
-	expected := []string{
-		"Event:Created:created a thing",
-		"Eventf:Updated",
-		"Warning:Failed:failed a thing",
-		"Warningf:Retrying",
+	expected := []recordedCall{
+		{method: "Event", ctx: ctx, reason: "Created", message: "created a thing"},
+		{method: "Eventf", ctx: ctx, reason: "Updated", messageFmt: "updated %d things", args: []interface{}{3}},
+		{method: "Warning", ctx: ctx, reason: "Failed", message: "failed a thing"},
+		{method: "Warningf", ctx: ctx, reason: "Retrying", messageFmt: "retrying %d times", args: []interface{}{2}},
 	}
 	if len(f.calls) != len(expected) {
 		t.Fatalf("expected %d calls, got %d: %v", len(expected), len(f.calls), f.calls)
 	}
-	for i, c := range expected {
-		if f.calls[i] != c {
-			t.Errorf("call %d: expected %q, got %q", i, c, f.calls[i])
+	for i, want := range expected {
+		got := f.calls[i]
+		if got.method != want.method || got.ctx != want.ctx || got.reason != want.reason ||
+			got.message != want.message || got.messageFmt != want.messageFmt || len(got.args) != len(want.args) {
+			t.Errorf("call %d: expected %+v, got %+v", i, want, got)
+			continue
+		}
+		for j := range want.args {
+			if got.args[j] != want.args[j] {
+				t.Errorf("call %d arg %d: expected %v, got %v", i, j, want.args[j], got.args[j])
+			}
 		}
 	}
 }
@@ -127,6 +145,12 @@ func TestEventsRecorderWrapperWithContextDoesNotMutateOriginal(t *testing.T) {
 
 	if len(f.calls) != 2 {
 		t.Fatalf("expected 2 recorded calls, got %d: %v", len(f.calls), f.calls)
+	}
+	if f.calls[0].ctx.Value(ctxKey{}) != "child" {
+		t.Errorf("expected the recorder to receive the new context, got %v", f.calls[0].ctx)
+	}
+	if f.calls[1].ctx.Value(ctxKey{}) != nil {
+		t.Errorf("expected the recorder to receive the original context, got %v", f.calls[1].ctx)
 	}
 
 	originalWrapper, ok := original.(*EventsRecorderWrapper)
